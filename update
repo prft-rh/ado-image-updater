@@ -1,0 +1,61 @@
+#!/bin/bash
+
+while getopts o:j:f:s:b:i:r: flag
+do
+	case "${flag}" in
+        o) org=${OPTARG};;
+        j) project=${OPTARG};;
+		f) filename=${OPTARG};;
+		s) sourcebranch=${OPTARG};;
+		b) targetbranch=${OPTARG};;
+		i) image=${OPTARG};;
+		r) repo=${OPTARG};;
+    esac
+done
+
+echo "org: $org";
+echo "project: $project";
+echo "filename: $filename";
+echo "source branch: $sourcebranch";
+echo "target branch: $targetbranch";
+echo "image: $image";
+echo "repo: $repo";
+
+# configure & login to ado
+az config set extension.use_dynamic_install=yes_without_prompt
+az devops configure --defaults organization="https://dev.azure.com/${org}" project=$project
+echo  "$AUTH_TOKEN" | az devops login
+
+# pull repository hosting the app config
+git clone "https://${org}:${AUTH_TOKEN}@dev.azure.com/${org}/${project}/_git/${repo}" repo
+cd repo
+
+git config --local user.email "test@vwac.net"
+git config --local user.name "Gitops Pipeline"
+
+# create a new branch to host the change from the target branch (main in general)
+random=$(echo $RANDOM | md5sum | head -c 6)
+git checkout $targetbranch
+
+# commit to main branch directly if sourcebranch if empty
+if [ -n "$sourcebranch" ]
+then
+  git checkout -b $sourcebranch$random
+fi
+
+# update the image tag in the manifest
+image=".spec.container.image=\"${image}\""
+echo "new image: $image"
+yq e -i $image  $filename
+
+# commit the change
+git commit -am "updating image tag"
+
+# only create a PR if necessary
+if [ -n "$sourcebranch" ]
+then
+  # push new branch
+  git push --set-upstream origin $sourcebranch$random
+
+  az repos pr create -r $repo -s $sourcebranch$random -t $targetbranch
+fi
